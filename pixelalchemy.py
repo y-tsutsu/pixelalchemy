@@ -17,11 +17,22 @@ class App(mglw.WindowConfig):
         #  |  \   |
         #  |   \  |
         # v0 ---- v1
+
+        # pos(x, y)
+        # vertices = np.array([
+        #     -1.0, -1.0,  # 左下
+        #     1.0, -1.0,   # 右下
+        #     -1.0, 1.0,   # 左上
+        #     1.0, 1.0,    # 右上
+        # ], dtype='f4')
+
+        # pos(x, y) + color(r, g, b)
         vertices = np.array([
-            -1.0, -1.0,  # 左下
-            1.0, -1.0,   # 右下
-            -1.0, 1.0,   # 左上
-            1.0, 1.0,    # 右上
+            # x,   y,    r, g, b
+            -1.0, -1.0,  1.0, 0.0, 0.0,  # 左下（赤）
+            1.0, -1.0,   0.0, 1.0, 0.0,  # 右下（緑）
+            -1.0,  1.0,  0.0, 0.0, 1.0,  # 左上（青）
+            1.0,  1.0,   1.0, 1.0, 1.0,  # 右上（白）
         ], dtype='f4')
 
         self.vbo = self.ctx.buffer(vertices.tobytes())
@@ -30,32 +41,33 @@ class App(mglw.WindowConfig):
             vertex_shader='''
                 #version 330
                 in vec2 in_pos;
-                out vec2 uv;
+                in vec3 in_color;
+                out vec3 v_color;
+
                 void main() {
-                    uv = in_pos * 0.5 + 0.5;
+                    v_color = in_color;
                     gl_Position = vec4(in_pos, 0.0, 1.0);
                 }
             ''',
             fragment_shader='''
                 #version 330
-                in vec2 uv;
+                in vec3 v_color;
                 out vec4 fragColor;
-                uniform float time;
+
                 void main() {
-                    // fragColor = vec4(1.0, 0.0, 0.0, 1.0);
-                    // fragColor = vec4(uv.x, uv.y, 0.0, 1.0);
-                    fragColor = vec4(uv, abs(sin(time)), 1.0);
+                    // fragColor = vec4(v_color.r, 0.0, 0.0, 1.0);
+                    fragColor = vec4(v_color, 1.0);
                 }
             '''
         )
 
         self.vao = self.ctx.vertex_array(
             self.prog,
-            [(self.vbo, '2f', 'in_pos')]
+            [(self.vbo, '2f 3f', 'in_pos', 'in_color')]
         )
 
     def on_render(self, time, frame_time):
-        self.prog['time'].value = time
+        self.ctx.clear(0.0, 0.0, 0.0)
         self.vao.render(moderngl.TRIANGLE_STRIP)
 
 
