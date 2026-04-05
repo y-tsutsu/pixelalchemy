@@ -1,41 +1,39 @@
 import moderngl
 import moderngl_window as mglw
 import numpy as np
-from PIL import Image
 
 
 class App(mglw.WindowConfig):
     gl_version = (3, 3)
-    title = 'Texture Practice'
+    title = 'Shader Practice'
     window_size = (800, 600)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        # pos + uv
+        # フルスクリーンQuad（画面全体を覆う板）
+        # v2 ---- v3
+        #  | \    |
+        #  |  \   |
+        #  |   \  |
+        # v0 ---- v1
         vertices = np.array([
-            # x,    y,     u, v
-            -1.0, -1.0,  0.0, 0.0,
-            1.0,  -1.0,  1.0, 0.0,
-            -1.0, 1.0,   0.0, 1.0,
-            1.0,  1.0,   1.0, 1.0,
+            -1.0, -1.0,  # 左下
+            1.0, -1.0,   # 右下
+            -1.0, 1.0,   # 左上
+            1.0, 1.0,    # 右上
         ], dtype='f4')
 
         self.vbo = self.ctx.buffer(vertices.tobytes())
-
-        img = Image.open('image/sample.png').transpose(Image.FLIP_TOP_BOTTOM)
-        self.texture = self.ctx.texture(img.size, 4, img.tobytes())
-        self.texture.build_mipmaps()
 
         self.prog = self.ctx.program(
             vertex_shader='''
                 #version 330
                 in vec2 in_pos;
-                in vec2 in_uv;
                 out vec2 uv;
 
                 void main() {
-                    uv = in_uv;
+                    uv = in_pos * 0.5 + 0.5;
                     gl_Position = vec4(in_pos, 0.0, 1.0);
                 }
             ''',
@@ -43,29 +41,23 @@ class App(mglw.WindowConfig):
                 #version 330
                 in vec2 uv;
                 out vec4 fragColor;
-                uniform sampler2D tex;
-                // uniform float time;
+                uniform float time;
 
                 void main() {
-                    fragColor = texture(tex, uv);
-                    // fragColor = texture(tex, uv * 2.0);
-                    // fragColor = texture(tex, vec2(uv.x, 1.0 - uv.y));
-                    // fragColor = texture(tex, uv + vec2(time * 0.1, 0.0));
+                    // fragColor = vec4(1.0, 0.0, 0.0, 1.0);
+                    // fragColor = vec4(uv.x, uv.y, 0.0, 1.0);
+                    fragColor = vec4(uv, abs(sin(time)), 1.0);
                 }
             '''
         )
 
         self.vao = self.ctx.vertex_array(
             self.prog,
-            [(self.vbo, '2f 2f', 'in_pos', 'in_uv')]
+            [(self.vbo, '2f', 'in_pos')]
         )
 
-        self.texture.use()
-        self.prog['tex'] = 0
-
     def on_render(self, time, frame_time):
-        # self.ctx.viewport = (0, 0, self.wnd.buffer_size[0], self.wnd.buffer_size[1])
-        # self.prog['time'].value = time
+        self.prog['time'].value = time
         self.ctx.clear(0.0, 0.0, 0.0)
         self.vao.render(moderngl.TRIANGLE_STRIP)
 
