@@ -27,11 +27,6 @@ class App(mglw.WindowConfig):
         self.texture = self.ctx.texture(img.size, 4, img.tobytes())
         self.texture.build_mipmaps()
 
-        # 中間テクスチャ（同じサイズ）
-        self.offscreen_tex = self.ctx.texture(self.window_size, 4)
-        # FBO作成
-        self.fbo = self.ctx.framebuffer(color_attachments=[self.offscreen_tex])
-
         self.prog = self.ctx.program(
             vertex_shader='''
                 #version 330
@@ -88,17 +83,6 @@ class App(mglw.WindowConfig):
 
     def on_render(self, time, frame_time):
         self.ctx.clear(0.0, 0.0, 0.0)
-
-        # --- 1パス目：元画像 → FBO ---
-        self.fbo.use()  # 描画先をFBOに切り替え
-        self.texture.use(location=0)
-        self.prog['tex'] = 0
-        self.vao.render(moderngl.TRIANGLE_STRIP)
-
-        # --- 2パス目：FBO → 画面 ---
-        self.ctx.screen.use()  # 描画先を画面に戻す
-        self.offscreen_tex.use(location=0)
-        self.prog['tex'] = 0
         self.vao.render(moderngl.TRIANGLE_STRIP)
 
 
