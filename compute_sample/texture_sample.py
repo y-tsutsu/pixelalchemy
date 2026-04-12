@@ -6,7 +6,7 @@ from PIL import Image
 
 class ComputeApp(mglw.WindowConfig):
     gl_version = (4, 3)  # ← Compute Shaderは4.3以上必要
-    title = 'Compute Shader Step1'
+    title = 'Texture sample'
     window_size = (800, 600)
 
     def __init__(self, **kwargs):

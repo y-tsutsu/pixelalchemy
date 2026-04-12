@@ -20,6 +20,6 @@ python_full_version = "3.14.3"
 
 [scripts]
 start = "python pixelalchemy.py"
-test = "python ./compute_sample/compute_texture_gray_shared.py"
+test = "python ./compute_sample/gaussian_benchmark.py"
 format = "autopep8 -ivr ."
 lint = "flake8 --show-source ."
