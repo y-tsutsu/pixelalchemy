@@ -11,6 +11,7 @@ class GLRenderer(mglw.WindowConfig):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.debug = False
 
         # Quad
         vertices = np.array([
@@ -62,6 +63,15 @@ class GLRenderer(mglw.WindowConfig):
         self.comp.run(gx, gy)
 
         self.ctx.memory_barrier()
+
+        if self.debug:
+            from PIL import Image
+            self.debug = False
+            data = self.edge_texture.read()
+            with open('edge_debug.raw', 'wb') as f:
+                f.write(data)
+            img = np.frombuffer(data, dtype=np.uint8).reshape((h, w))
+            Image.fromarray(img).save('edge_debug.png')
 
         self.texture.use(location=0)
         self.edge_texture.use(location=1)
