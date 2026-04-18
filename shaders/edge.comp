@@ -3,7 +3,7 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(binding = 0) uniform sampler2D src_tex;
-layout(rgba8, binding = 1) writeonly uniform image2D dst_img;
+layout(r8, binding = 1) writeonly uniform image2D dst_img;
 
 void main()
 {
@@ -26,6 +26,7 @@ void main()
     dy += texture(src_tex, uv + vec2(0, texel.y)).r * 1.0;
 
     float edge = length(vec2(dx, dy));
+    edge = clamp(edge, 0.0, 1.0);
 
-    imageStore(dst_img, coord, vec4(edge, 0.0, 0.0, 1.0));
+    imageStore(dst_img, coord, vec4(edge));  // r8なので.rだけ使われる
 }

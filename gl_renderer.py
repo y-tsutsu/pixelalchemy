@@ -50,7 +50,7 @@ class GLRenderer(mglw.WindowConfig):
         # 初回 or サイズ変更時にテクスチャ作成
         if self.texture is None or self.texture.size != (w, h):
             self.texture = self.ctx.texture((w, h), 4)
-            self.edge_texture = self.ctx.texture((w, h), 4)
+            self.edge_texture = self.ctx.texture((w, h), 1)
             self.texture.build_mipmaps()
 
         self.texture.write(frame.tobytes())
