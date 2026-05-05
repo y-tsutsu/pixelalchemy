@@ -8,6 +8,8 @@ pygobject = "*"
 moderngl = "*"
 moderngl-window = "*"
 numpy = "*"
+vulkan = "*"
+glfw = "*"
 
 [dev-packages]
 autopep8 = "*"

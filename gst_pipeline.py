@@ -2,9 +2,9 @@ import threading
 
 import gi
 import numpy as np
-from gi.repository import Gst
 
 gi.require_version('Gst', '1.0')
+from gi.repository import Gst  # noqa: E402
 
 
 class GStreamerPipeline:
