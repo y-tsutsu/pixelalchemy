@@ -33,10 +33,11 @@ class VulkanRenderer:
         self.swapchain_views = []
         self.swapchain_layouts = []
 
-        self.output_image = None
-        self.output_image_memory = None
-        self.output_image_view = None
-        self.output_image_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED
+        self.edge_image = None
+        self.edge_image_memory = None
+        self.edge_image_view = None
+        self.edge_image_size = None
+        self.edge_image_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED
 
         self.src_image = None
         self.src_image_memory = None
@@ -51,9 +52,16 @@ class VulkanRenderer:
         self.descriptor_set_layout = None
         self.descriptor_pool = None
         self.descriptor_sets = []
-        self.pipeline_layout = None
+        self.sampler = None
+        self.compute_pipeline_layout = None
         self.compute_pipeline = None
-        self.shader_module = None
+        self.compute_shader_module = None
+        self.graphics_pipeline_layout = None
+        self.graphics_pipeline = None
+        self.vertex_shader_module = None
+        self.fragment_shader_module = None
+        self.render_pass = None
+        self.framebuffers = []
 
         self.command_pool = None
         self.command_buffer = None
@@ -108,7 +116,7 @@ class VulkanRenderer:
 
         submit_info = vk.VkSubmitInfo(
             pWaitSemaphores=[self.image_available],
-            pWaitDstStageMask=[vk.VK_PIPELINE_STAGE_TRANSFER_BIT],
+            pWaitDstStageMask=[vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT],
             pCommandBuffers=[self.command_buffer],
             pSignalSemaphores=[self.compute_finished],
         )
@@ -126,15 +134,29 @@ class VulkanRenderer:
             vk.vkDeviceWaitIdle(self.device)
 
         self._destroy_source_resources()
-        self._destroy_output_resources()
+        self._destroy_edge_resources()
         self._destroy_staging_resources()
 
+        for framebuffer in self.framebuffers:
+            vk.vkDestroyFramebuffer(self.device, framebuffer, None)
+        if self.graphics_pipeline:
+            vk.vkDestroyPipeline(self.device, self.graphics_pipeline, None)
+        if self.graphics_pipeline_layout:
+            vk.vkDestroyPipelineLayout(self.device, self.graphics_pipeline_layout, None)
+        if self.render_pass:
+            vk.vkDestroyRenderPass(self.device, self.render_pass, None)
+        if self.vertex_shader_module:
+            vk.vkDestroyShaderModule(self.device, self.vertex_shader_module, None)
+        if self.fragment_shader_module:
+            vk.vkDestroyShaderModule(self.device, self.fragment_shader_module, None)
         if self.compute_pipeline:
             vk.vkDestroyPipeline(self.device, self.compute_pipeline, None)
-        if self.pipeline_layout:
-            vk.vkDestroyPipelineLayout(self.device, self.pipeline_layout, None)
-        if self.shader_module:
-            vk.vkDestroyShaderModule(self.device, self.shader_module, None)
+        if self.compute_pipeline_layout:
+            vk.vkDestroyPipelineLayout(self.device, self.compute_pipeline_layout, None)
+        if self.compute_shader_module:
+            vk.vkDestroyShaderModule(self.device, self.compute_shader_module, None)
+        if self.sampler:
+            vk.vkDestroySampler(self.device, self.sampler, None)
         if self.descriptor_pool:
             vk.vkDestroyDescriptorPool(self.device, self.descriptor_pool, None)
         if self.descriptor_set_layout:
@@ -187,8 +209,12 @@ class VulkanRenderer:
         self._create_device()
         self._load_device_extensions()
         self._create_swapchain()
+        self._create_render_pass()
+        self._create_framebuffers()
         self._create_descriptor_set_layout()
+        self._create_sampler()
         self._create_compute_pipeline()
+        self._create_graphics_pipeline()
         self._create_command_pool()
         self._create_sync_objects()
 
@@ -283,9 +309,9 @@ class VulkanRenderer:
         if caps.maxImageCount and image_count > caps.maxImageCount:
             image_count = caps.maxImageCount
 
-        required_usage = vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT
+        required_usage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
         if not caps.supportedUsageFlags & required_usage:
-            raise RuntimeError('Swapchain images do not support VK_IMAGE_USAGE_TRANSFER_DST_BIT')
+            raise RuntimeError('Swapchain images do not support VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT')
 
         swapchain_info = vk.VkSwapchainCreateInfoKHR(
             surface=self.surface,
@@ -294,7 +320,7 @@ class VulkanRenderer:
             imageColorSpace=color_space,
             imageExtent=extent,
             imageArrayLayers=1,
-            imageUsage=vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            imageUsage=vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
             imageSharingMode=vk.VK_SHARING_MODE_EXCLUSIVE,
             preTransform=caps.currentTransform,
             compositeAlpha=vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -311,7 +337,6 @@ class VulkanRenderer:
             for image in self.swapchain_images
         ]
         self.swapchain_layouts = [vk.VK_IMAGE_LAYOUT_UNDEFINED for _ in self.swapchain_images]
-        self._create_output_resources()
 
     def _choose_surface_format(self, formats):
         for fmt in formats:
@@ -340,6 +365,53 @@ class VulkanRenderer:
         height = min(max(height, caps.minImageExtent.height), caps.maxImageExtent.height)
         return vk.VkExtent2D(width=width, height=height)
 
+    def _create_render_pass(self):
+        attachment = vk.VkAttachmentDescription(
+            format=self.swapchain_format,
+            samples=vk.VK_SAMPLE_COUNT_1_BIT,
+            loadOp=vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
+            storeOp=vk.VK_ATTACHMENT_STORE_OP_STORE,
+            stencilLoadOp=vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            stencilStoreOp=vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            initialLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            finalLayout=vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        )
+        color_ref = vk.VkAttachmentReference(
+            attachment=0,
+            layout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        )
+        subpass = vk.VkSubpassDescription(
+            pipelineBindPoint=vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pColorAttachments=[color_ref],
+        )
+        dependency = vk.VkSubpassDependency(
+            srcSubpass=vk.VK_SUBPASS_EXTERNAL,
+            dstSubpass=0,
+            srcStageMask=vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            dstStageMask=vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            srcAccessMask=0,
+            dstAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        )
+        render_pass_info = vk.VkRenderPassCreateInfo(
+            pAttachments=[attachment],
+            pSubpasses=[subpass],
+            pDependencies=[dependency],
+        )
+        self.render_pass = vk.vkCreateRenderPass(self.device, render_pass_info, None)
+
+    def _create_framebuffers(self):
+        self.framebuffers = []
+        for view in self.swapchain_views:
+            framebuffer_info = vk.VkFramebufferCreateInfo(
+                renderPass=self.render_pass,
+                pAttachments=[view],
+                width=self.swapchain_extent.width,
+                height=self.swapchain_extent.height,
+                layers=1,
+            )
+            self.framebuffers.append(
+                vk.vkCreateFramebuffer(self.device, framebuffer_info, None))
+
     def _create_descriptor_set_layout(self):
         bindings = [
             vk.VkDescriptorSetLayoutBinding(
@@ -354,33 +426,161 @@ class VulkanRenderer:
                 descriptorCount=1,
                 stageFlags=vk.VK_SHADER_STAGE_COMPUTE_BIT,
             ),
+            vk.VkDescriptorSetLayoutBinding(
+                binding=2,
+                descriptorType=vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                descriptorCount=1,
+                stageFlags=vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+            ),
+            vk.VkDescriptorSetLayoutBinding(
+                binding=3,
+                descriptorType=vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                descriptorCount=1,
+                stageFlags=vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+            ),
         ]
         layout_info = vk.VkDescriptorSetLayoutCreateInfo(pBindings=bindings)
         self.descriptor_set_layout = vk.vkCreateDescriptorSetLayout(
             self.device, layout_info, None)
 
+    def _create_sampler(self):
+        sampler_info = vk.VkSamplerCreateInfo(
+            magFilter=vk.VK_FILTER_LINEAR,
+            minFilter=vk.VK_FILTER_LINEAR,
+            mipmapMode=vk.VK_SAMPLER_MIPMAP_MODE_LINEAR,
+            addressModeU=vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            addressModeV=vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            addressModeW=vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            mipLodBias=0.0,
+            anisotropyEnable=vk.VK_FALSE,
+            maxAnisotropy=1.0,
+            compareEnable=vk.VK_FALSE,
+            compareOp=vk.VK_COMPARE_OP_ALWAYS,
+            minLod=0.0,
+            maxLod=0.0,
+            borderColor=vk.VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+            unnormalizedCoordinates=vk.VK_FALSE,
+        )
+        self.sampler = vk.vkCreateSampler(self.device, sampler_info, None)
+
     def _create_compute_pipeline(self):
         shader_path = Path('shaders/vulkan_edge.comp')
         spv = self._compile_shader(shader_path)
         shader_info = vk.VkShaderModuleCreateInfo(codeSize=len(spv), pCode=spv)
-        self.shader_module = vk.vkCreateShaderModule(self.device, shader_info, None)
+        self.compute_shader_module = vk.vkCreateShaderModule(self.device, shader_info, None)
 
         layout_info = vk.VkPipelineLayoutCreateInfo(
             pSetLayouts=[self.descriptor_set_layout])
-        self.pipeline_layout = vk.vkCreatePipelineLayout(self.device, layout_info, None)
+        self.compute_pipeline_layout = vk.vkCreatePipelineLayout(
+            self.device, layout_info, None)
 
         stage_info = vk.VkPipelineShaderStageCreateInfo(
             stage=vk.VK_SHADER_STAGE_COMPUTE_BIT,
-            module=self.shader_module,
+            module=self.compute_shader_module,
             pName='main',
         )
         pipeline_info = vk.VkComputePipelineCreateInfo(
             stage=stage_info,
-            layout=self.pipeline_layout,
+            layout=self.compute_pipeline_layout,
         )
         pipelines = vk.vkCreateComputePipelines(
             self.device, vk.VK_NULL_HANDLE, 1, [pipeline_info], None)
         self.compute_pipeline = pipelines[0]
+
+    def _create_graphics_pipeline(self):
+        vert_spv = self._compile_shader(Path('shaders/vulkan_present.vert'))
+        frag_spv = self._compile_shader(Path('shaders/vulkan_present.frag'))
+        self.vertex_shader_module = vk.vkCreateShaderModule(
+            self.device,
+            vk.VkShaderModuleCreateInfo(codeSize=len(vert_spv), pCode=vert_spv),
+            None,
+        )
+        self.fragment_shader_module = vk.vkCreateShaderModule(
+            self.device,
+            vk.VkShaderModuleCreateInfo(codeSize=len(frag_spv), pCode=frag_spv),
+            None,
+        )
+
+        stages = [
+            vk.VkPipelineShaderStageCreateInfo(
+                stage=vk.VK_SHADER_STAGE_VERTEX_BIT,
+                module=self.vertex_shader_module,
+                pName='main',
+            ),
+            vk.VkPipelineShaderStageCreateInfo(
+                stage=vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+                module=self.fragment_shader_module,
+                pName='main',
+            ),
+        ]
+        vertex_input = vk.VkPipelineVertexInputStateCreateInfo()
+        input_assembly = vk.VkPipelineInputAssemblyStateCreateInfo(
+            topology=vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+            primitiveRestartEnable=vk.VK_FALSE,
+        )
+        viewport_state = vk.VkPipelineViewportStateCreateInfo(
+            viewportCount=1,
+            scissorCount=1,
+        )
+        dynamic_state = vk.VkPipelineDynamicStateCreateInfo(
+            pDynamicStates=[
+                vk.VK_DYNAMIC_STATE_VIEWPORT,
+                vk.VK_DYNAMIC_STATE_SCISSOR,
+            ],
+        )
+        rasterizer = vk.VkPipelineRasterizationStateCreateInfo(
+            depthClampEnable=vk.VK_FALSE,
+            rasterizerDiscardEnable=vk.VK_FALSE,
+            polygonMode=vk.VK_POLYGON_MODE_FILL,
+            cullMode=vk.VK_CULL_MODE_NONE,
+            frontFace=vk.VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            depthBiasEnable=vk.VK_FALSE,
+            lineWidth=1.0,
+        )
+        multisample = vk.VkPipelineMultisampleStateCreateInfo(
+            rasterizationSamples=vk.VK_SAMPLE_COUNT_1_BIT,
+            sampleShadingEnable=vk.VK_FALSE,
+        )
+        color_blend_attachment = vk.VkPipelineColorBlendAttachmentState(
+            blendEnable=vk.VK_FALSE,
+            srcColorBlendFactor=vk.VK_BLEND_FACTOR_ONE,
+            dstColorBlendFactor=vk.VK_BLEND_FACTOR_ZERO,
+            colorBlendOp=vk.VK_BLEND_OP_ADD,
+            srcAlphaBlendFactor=vk.VK_BLEND_FACTOR_ONE,
+            dstAlphaBlendFactor=vk.VK_BLEND_FACTOR_ZERO,
+            alphaBlendOp=vk.VK_BLEND_OP_ADD,
+            colorWriteMask=(
+                vk.VK_COLOR_COMPONENT_R_BIT |
+                vk.VK_COLOR_COMPONENT_G_BIT |
+                vk.VK_COLOR_COMPONENT_B_BIT |
+                vk.VK_COLOR_COMPONENT_A_BIT
+            ),
+        )
+        color_blend = vk.VkPipelineColorBlendStateCreateInfo(
+            logicOpEnable=vk.VK_FALSE,
+            pAttachments=[color_blend_attachment],
+            blendConstants=[0.0, 0.0, 0.0, 0.0],
+        )
+        layout_info = vk.VkPipelineLayoutCreateInfo(
+            pSetLayouts=[self.descriptor_set_layout])
+        self.graphics_pipeline_layout = vk.vkCreatePipelineLayout(
+            self.device, layout_info, None)
+        pipeline_info = vk.VkGraphicsPipelineCreateInfo(
+            pStages=stages,
+            pVertexInputState=vertex_input,
+            pInputAssemblyState=input_assembly,
+            pViewportState=viewport_state,
+            pRasterizationState=rasterizer,
+            pMultisampleState=multisample,
+            pColorBlendState=color_blend,
+            pDynamicState=dynamic_state,
+            layout=self.graphics_pipeline_layout,
+            renderPass=self.render_pass,
+            subpass=0,
+        )
+        pipelines = vk.vkCreateGraphicsPipelines(
+            self.device, vk.VK_NULL_HANDLE, 1, [pipeline_info], None)
+        self.graphics_pipeline = pipelines[0]
 
     def _compile_shader(self, shader_path):
         spv_path = Path('/tmp') / f'{shader_path.name}.spv'
@@ -420,12 +620,26 @@ class VulkanRenderer:
                 width,
                 height,
                 vk.VK_FORMAT_R8G8B8A8_UNORM,
-                vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk.VK_IMAGE_USAGE_STORAGE_BIT,
+                (vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                 vk.VK_IMAGE_USAGE_STORAGE_BIT |
+                 vk.VK_IMAGE_USAGE_SAMPLED_BIT),
                 vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             )
             self.src_image_view = self._create_image_view(
                 self.src_image, vk.VK_FORMAT_R8G8B8A8_UNORM)
             self.src_image_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED
+            self._destroy_edge_resources()
+            self.edge_image, self.edge_image_memory = self._create_image(
+                width,
+                height,
+                vk.VK_FORMAT_R8_UNORM,
+                vk.VK_IMAGE_USAGE_STORAGE_BIT | vk.VK_IMAGE_USAGE_SAMPLED_BIT,
+                vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            )
+            self.edge_image_view = self._create_image_view(
+                self.edge_image, vk.VK_FORMAT_R8_UNORM)
+            self.edge_image_size = (width, height)
+            self.edge_image_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED
             self._recreate_descriptor_sets()
         if byte_size > self.staging_size:
             self._destroy_staging_resources()
@@ -446,13 +660,19 @@ class VulkanRenderer:
         if self.descriptor_pool:
             vk.vkDestroyDescriptorPool(self.device, self.descriptor_pool, None)
 
-        pool_size = vk.VkDescriptorPoolSize(
-            type=vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            descriptorCount=len(self.swapchain_images) * 2,
-        )
+        pool_sizes = [
+            vk.VkDescriptorPoolSize(
+                type=vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                descriptorCount=len(self.swapchain_images) * 2,
+            ),
+            vk.VkDescriptorPoolSize(
+                type=vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                descriptorCount=len(self.swapchain_images) * 2,
+            ),
+        ]
         pool_info = vk.VkDescriptorPoolCreateInfo(
             maxSets=len(self.swapchain_images),
-            pPoolSizes=[pool_size],
+            pPoolSizes=pool_sizes,
         )
         self.descriptor_pool = vk.vkCreateDescriptorPool(self.device, pool_info, None)
         alloc_info = vk.VkDescriptorSetAllocateInfo(
@@ -466,9 +686,19 @@ class VulkanRenderer:
                 imageView=self.src_image_view,
                 imageLayout=vk.VK_IMAGE_LAYOUT_GENERAL,
             )
-            dst_info = vk.VkDescriptorImageInfo(
-                imageView=self.output_image_view,
+            edge_storage_info = vk.VkDescriptorImageInfo(
+                imageView=self.edge_image_view,
                 imageLayout=vk.VK_IMAGE_LAYOUT_GENERAL,
+            )
+            src_sample_info = vk.VkDescriptorImageInfo(
+                sampler=self.sampler,
+                imageView=self.src_image_view,
+                imageLayout=vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            )
+            edge_sample_info = vk.VkDescriptorImageInfo(
+                sampler=self.sampler,
+                imageView=self.edge_image_view,
+                imageLayout=vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             )
             writes = [
                 vk.VkWriteDescriptorSet(
@@ -481,7 +711,19 @@ class VulkanRenderer:
                     dstSet=descriptor_set,
                     dstBinding=1,
                     descriptorType=vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                    pImageInfo=[dst_info],
+                    pImageInfo=[edge_storage_info],
+                ),
+                vk.VkWriteDescriptorSet(
+                    dstSet=descriptor_set,
+                    dstBinding=2,
+                    descriptorType=vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    pImageInfo=[src_sample_info],
+                ),
+                vk.VkWriteDescriptorSet(
+                    dstSet=descriptor_set,
+                    dstBinding=3,
+                    descriptorType=vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    pImageInfo=[edge_sample_info],
                 ),
             ]
             vk.vkUpdateDescriptorSets(self.device, len(writes), writes, 0, None)
@@ -492,13 +734,19 @@ class VulkanRenderer:
             flags=vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)
         vk.vkBeginCommandBuffer(self.command_buffer, begin_info)
 
+        src_src_access = 0
+        src_src_stage = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+        if self.src_image_layout == vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            src_src_access = vk.VK_ACCESS_SHADER_READ_BIT
+            src_src_stage = vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+
         self._image_barrier(
             self.src_image,
             self.src_image_layout,
             vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            0,
+            src_src_access,
             vk.VK_ACCESS_TRANSFER_WRITE_BIT,
-            vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            src_src_stage,
             vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
         )
         copy_region = vk.VkBufferImageCopy(
@@ -533,22 +781,22 @@ class VulkanRenderer:
         )
         self.src_image_layout = vk.VK_IMAGE_LAYOUT_GENERAL
 
-        output_src_access = 0
-        output_src_stage = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-        if self.output_image_layout == vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
-            output_src_access = vk.VK_ACCESS_TRANSFER_READ_BIT
-            output_src_stage = vk.VK_PIPELINE_STAGE_TRANSFER_BIT
+        edge_src_access = 0
+        edge_src_stage = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+        if self.edge_image_layout == vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            edge_src_access = vk.VK_ACCESS_SHADER_READ_BIT
+            edge_src_stage = vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
 
         self._image_barrier(
-            self.output_image,
-            self.output_image_layout,
+            self.edge_image,
+            self.edge_image_layout,
             vk.VK_IMAGE_LAYOUT_GENERAL,
-            output_src_access,
+            edge_src_access,
             vk.VK_ACCESS_SHADER_WRITE_BIT,
-            output_src_stage,
+            edge_src_stage,
             vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         )
-        self.output_image_layout = vk.VK_IMAGE_LAYOUT_GENERAL
+        self.edge_image_layout = vk.VK_IMAGE_LAYOUT_GENERAL
 
         vk.vkCmdBindPipeline(
             self.command_buffer,
@@ -558,7 +806,7 @@ class VulkanRenderer:
         vk.vkCmdBindDescriptorSets(
             self.command_buffer,
             vk.VK_PIPELINE_BIND_POINT_COMPUTE,
-            self.pipeline_layout,
+            self.compute_pipeline_layout,
             0,
             1,
             [self.descriptor_sets[image_index]],
@@ -567,96 +815,115 @@ class VulkanRenderer:
         )
         vk.vkCmdDispatch(
             self.command_buffer,
-            math.ceil(self.swapchain_extent.width / 16),
-            math.ceil(self.swapchain_extent.height / 16),
+            math.ceil(src_width / 16),
+            math.ceil(src_height / 16),
             1,
         )
 
         self._image_barrier(
-            self.output_image,
+            self.src_image,
             vk.VK_IMAGE_LAYOUT_GENERAL,
-            vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            vk.VK_ACCESS_SHADER_WRITE_BIT,
-            vk.VK_ACCESS_TRANSFER_READ_BIT,
+            vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            vk.VK_ACCESS_SHADER_READ_BIT,
+            vk.VK_ACCESS_SHADER_READ_BIT,
             vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         )
-        self.output_image_layout = vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+        self.src_image_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+
+        self._image_barrier(
+            self.edge_image,
+            vk.VK_IMAGE_LAYOUT_GENERAL,
+            vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            vk.VK_ACCESS_SHADER_WRITE_BIT,
+            vk.VK_ACCESS_SHADER_READ_BIT,
+            vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        )
+        self.edge_image_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+
+        swap_src_access = 0
+        swap_src_stage = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+        if self.swapchain_layouts[image_index] == vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+            swap_src_stage = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
 
         self._image_barrier(
             self.swapchain_images[image_index],
             self.swapchain_layouts[image_index],
-            vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            0,
-            vk.VK_ACCESS_TRANSFER_WRITE_BIT,
-            vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            swap_src_access,
+            vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            swap_src_stage,
+            vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
         )
 
+        clear_color = [0.0, 0.0, 0.0, 1.0]
         if self.clear_test:
-            color = vk.VkClearColorValue(float32=[1.0, 0.0, 0.0, 1.0])
-            vk.vkCmdClearColorImage(
-                self.command_buffer,
-                self.swapchain_images[image_index],
-                vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                color,
-                1,
-                [self._color_subresource_range()],
-            )
-        else:
-            blit = vk.VkImageBlit(
-                srcSubresource=vk.VkImageSubresourceLayers(
-                    aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                    mipLevel=0,
-                    baseArrayLayer=0,
-                    layerCount=1,
-                ),
-                srcOffsets=[
-                    vk.VkOffset3D(x=0, y=0, z=0),
-                    vk.VkOffset3D(
-                        x=self.swapchain_extent.width,
-                        y=self.swapchain_extent.height,
-                        z=1,
-                    ),
-                ],
-                dstSubresource=vk.VkImageSubresourceLayers(
-                    aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                    mipLevel=0,
-                    baseArrayLayer=0,
-                    layerCount=1,
-                ),
-                dstOffsets=[
-                    vk.VkOffset3D(x=0, y=0, z=0),
-                    vk.VkOffset3D(
-                        x=self.swapchain_extent.width,
-                        y=self.swapchain_extent.height,
-                        z=1,
-                    ),
-                ],
-            )
-            vk.vkCmdBlitImage(
-                self.command_buffer,
-                self.output_image,
-                vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                self.swapchain_images[image_index],
-                vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                1,
-                [blit],
-                vk.VK_FILTER_NEAREST,
-            )
-
-        self._image_barrier(
-            self.swapchain_images[image_index],
-            vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            vk.VK_ACCESS_TRANSFER_WRITE_BIT,
-            0,
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
-            vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            clear_color = [1.0, 0.0, 0.0, 1.0]
+        render_pass_info = vk.VkRenderPassBeginInfo(
+            renderPass=self.render_pass,
+            framebuffer=self.framebuffers[image_index],
+            renderArea=vk.VkRect2D(
+                offset=vk.VkOffset2D(x=0, y=0),
+                extent=self.swapchain_extent,
+            ),
+            pClearValues=[
+                vk.VkClearValue(
+                    color=vk.VkClearColorValue(float32=clear_color))
+            ],
         )
+        vk.vkCmdBeginRenderPass(
+            self.command_buffer,
+            render_pass_info,
+            vk.VK_SUBPASS_CONTENTS_INLINE,
+        )
+        if not self.clear_test:
+            vk.vkCmdBindPipeline(
+                self.command_buffer,
+                vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                self.graphics_pipeline,
+            )
+            vk.vkCmdBindDescriptorSets(
+                self.command_buffer,
+                vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                self.graphics_pipeline_layout,
+                0,
+                1,
+                [self.descriptor_sets[image_index]],
+                0,
+                None,
+            )
+            viewport, scissor = self._content_viewport(src_width, src_height)
+            vk.vkCmdSetViewport(self.command_buffer, 0, 1, [viewport])
+            vk.vkCmdSetScissor(self.command_buffer, 0, 1, [scissor])
+            vk.vkCmdDraw(self.command_buffer, 4, 1, 0, 0)
+        vk.vkCmdEndRenderPass(self.command_buffer)
         self.swapchain_layouts[image_index] = vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
 
         vk.vkEndCommandBuffer(self.command_buffer)
+
+    def _content_viewport(self, src_width, src_height):
+        dst_width = self.swapchain_extent.width
+        dst_height = self.swapchain_extent.height
+        scale = min(dst_width / src_width, dst_height / src_height)
+        content_width = max(1, int(round(src_width * scale)))
+        content_height = max(1, int(round(src_height * scale)))
+        offset_x = (dst_width - content_width) // 2
+        offset_y = (dst_height - content_height) // 2
+
+        viewport = vk.VkViewport(
+            x=float(offset_x),
+            y=float(offset_y),
+            width=float(content_width),
+            height=float(content_height),
+            minDepth=0.0,
+            maxDepth=1.0,
+        )
+        scissor = vk.VkRect2D(
+            offset=vk.VkOffset2D(x=offset_x, y=offset_y),
+            extent=vk.VkExtent2D(width=content_width, height=content_height),
+        )
+        return viewport, scissor
 
     def _image_barrier(
             self,
@@ -744,18 +1011,6 @@ class VulkanRenderer:
         vk.vkBindImageMemory(self.device, image, memory, 0)
         return image, memory
 
-    def _create_output_resources(self):
-        self.output_image, self.output_image_memory = self._create_image(
-            self.swapchain_extent.width,
-            self.swapchain_extent.height,
-            vk.VK_FORMAT_R8G8B8A8_UNORM,
-            vk.VK_IMAGE_USAGE_STORAGE_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-        )
-        self.output_image_view = self._create_image_view(
-            self.output_image, vk.VK_FORMAT_R8G8B8A8_UNORM)
-        self.output_image_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED
-
     def _create_image_view(self, image, image_format):
         view_info = vk.VkImageViewCreateInfo(
             image=image,
@@ -792,17 +1047,18 @@ class VulkanRenderer:
         self.src_image_size = None
         self.src_image_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED
 
-    def _destroy_output_resources(self):
-        if self.output_image_view:
-            vk.vkDestroyImageView(self.device, self.output_image_view, None)
-            self.output_image_view = None
-        if self.output_image:
-            vk.vkDestroyImage(self.device, self.output_image, None)
-            self.output_image = None
-        if self.output_image_memory:
-            vk.vkFreeMemory(self.device, self.output_image_memory, None)
-            self.output_image_memory = None
-        self.output_image_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED
+    def _destroy_edge_resources(self):
+        if self.edge_image_view:
+            vk.vkDestroyImageView(self.device, self.edge_image_view, None)
+            self.edge_image_view = None
+        if self.edge_image:
+            vk.vkDestroyImage(self.device, self.edge_image, None)
+            self.edge_image = None
+        if self.edge_image_memory:
+            vk.vkFreeMemory(self.device, self.edge_image_memory, None)
+            self.edge_image_memory = None
+        self.edge_image_size = None
+        self.edge_image_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED
 
     def _destroy_staging_resources(self):
         if self.staging_buffer:

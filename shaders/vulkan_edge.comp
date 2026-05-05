@@ -3,12 +3,7 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(rgba8, binding = 0) readonly uniform image2D src_img;
-layout(rgba8, binding = 1) writeonly uniform image2D dst_img;
-
-float gray(vec3 c)
-{
-    return dot(c, vec3(0.299, 0.587, 0.114));
-}
+layout(r8, binding = 1) writeonly uniform image2D edge_img;
 
 vec4 load_clamped(ivec2 p, ivec2 size)
 {
@@ -18,38 +13,23 @@ vec4 load_clamped(ivec2 p, ivec2 size)
 
 void main()
 {
-    ivec2 out_pos = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 out_size = imageSize(dst_img);
-    ivec2 src_size = imageSize(src_img);
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(src_img);
 
-    if (out_pos.x >= out_size.x || out_pos.y >= out_size.y) {
+    if (pos.x >= size.x || pos.y >= size.y) {
         return;
     }
 
-    bool show_source = out_pos.x < out_size.x / 2;
-    vec2 uv = (vec2(out_pos) + 0.5) / vec2(out_size);
+    float gx = 0.0;
+    float gy = 0.0;
 
-    ivec2 src_pos = ivec2(uv * vec2(src_size));
-    src_pos = clamp(src_pos, ivec2(0), src_size - ivec2(1));
+    gx += load_clamped(pos + ivec2(-1, 0), size).r * -1.0;
+    gx += load_clamped(pos + ivec2( 1, 0), size).r *  1.0;
 
-    if (show_source) {
-        vec4 c = imageLoad(src_img, src_pos);
-        imageStore(dst_img, out_pos, vec4(c.rgb, 1.0));
-        return;
-    }
+    gy += load_clamped(pos + ivec2(0, -1), size).r * -1.0;
+    gy += load_clamped(pos + ivec2(0,  1), size).r *  1.0;
 
-    float tl = gray(load_clamped(src_pos + ivec2(-1, -1), src_size).rgb);
-    float tc = gray(load_clamped(src_pos + ivec2( 0, -1), src_size).rgb);
-    float tr = gray(load_clamped(src_pos + ivec2( 1, -1), src_size).rgb);
-    float ml = gray(load_clamped(src_pos + ivec2(-1,  0), src_size).rgb);
-    float mr = gray(load_clamped(src_pos + ivec2( 1,  0), src_size).rgb);
-    float bl = gray(load_clamped(src_pos + ivec2(-1,  1), src_size).rgb);
-    float bc = gray(load_clamped(src_pos + ivec2( 0,  1), src_size).rgb);
-    float br = gray(load_clamped(src_pos + ivec2( 1,  1), src_size).rgb);
-
-    float gx = -tl - 2.0 * ml - bl + tr + 2.0 * mr + br;
-    float gy = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
     float edge = clamp(length(vec2(gx, gy)), 0.0, 1.0);
 
-    imageStore(dst_img, out_pos, vec4(vec3(edge), 1.0));
+    imageStore(edge_img, pos, vec4(edge));
 }

@@ -5,6 +5,7 @@ This repository contains simple examples and demos to help understand shader-bas
 
 The main demo uses GStreamer for video input and can run the edge detection pipeline with either Vulkan or OpenGL/ModernGL.
 The Vulkan path is the default backend, while the OpenGL path remains available for comparing the two APIs around the same video-processing task.
+Both backends use a compute shader for edge detection and a vertex/fragment shader pair for presenting the result.
 
 ## Setup
 
